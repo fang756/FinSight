@@ -227,11 +227,21 @@ const renderMarkdown = (text) => {
     }
   }
 
-  // 3. 加粗/斜体 + 换行
+  // 3. 标题处理：## → <h3>, ###/#### → <h4>
   html = out.join('\n')
+    .replace(/^#### (.+)$/gm, '<h4>$1</h4>')
+    .replace(/^### (.+)$/gm, '<h4>$1</h4>')
+    .replace(/^## (.+)$/gm, '<h3>$1</h3>')
+    .replace(/^# (.+)$/gm, '<h3>$1</h3>')
+
+  // 4. 保护表格：移除 <table> 内部的换行，防止后续 <br/> 破坏表格结构
+  html = html.replace(/<table>[\s\S]*?<\/table>/g, m => m.replace(/\n/g, ''))
+
+  // 5. 加粗/斜体 + 换行（统一用<br/>，避免多余间距）
+  html = html
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
     .replace(/\*(.+?)\*/g, '<em>$1</em>')
-    .replace(/\n{2,}/g, '<br/><br/>')
+    .replace(/\n{2,}/g, '<br/>')
     .replace(/\n/g, '<br/>')
   return html
 }
@@ -599,7 +609,24 @@ onMounted(async () => {
   border-bottom-left-radius: 4px;
 }
 .msg-text {
-  white-space: pre-wrap;
+  line-height: 1.7;
+}
+.msg-text :deep(h3) {
+  font-size: 15px;
+  font-weight: 700;
+  color: #1a1a2e;
+  margin: 10px 0 4px 0;
+}
+.msg-text :deep(h4) {
+  font-size: 14px;
+  font-weight: 600;
+  color: #333;
+  margin: 8px 0 3px 0;
+}
+.msg-text :deep(br) {
+  display: block;
+  content: '';
+  margin: 2px 0;
 }
 .msg-text :deep(strong) {
   color: inherit;

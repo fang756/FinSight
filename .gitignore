@@ -7,3 +7,15 @@ __pycache__/
 *.exe
 .idea/
 .vscode/
+*.sql
+test_*.txt
+test_*.py
+test_*.txt
+test_req.json
+push_*.py
+export_data*.py
+check_*.py
+debug_*.py
+*.pt
+FinSight/saved_models/
+.claude/settings.local.json

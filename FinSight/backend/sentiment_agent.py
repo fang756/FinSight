@@ -164,7 +164,8 @@ SYSTEM_PROMPT = """你是股小查🦊，一个热情活泼的A股智能投资�
 ## 回答规则
 - 不提供具体的买卖建议，只做分析参考
 - 如果数据不足，如实告知并给出建议
-- 用中文回答"""
+- 用中文回答
+- **重要：调用工具时必须用 JSON function calling，不要输出 <tool_calls> XML 标签**"""
 
 
 def ask_ai(question: str, ts_code: str = None, history: list = None) -> dict:
@@ -192,56 +193,105 @@ def ask_ai(question: str, ts_code: str = None, history: list = None) -> dict:
 
         messages.append({"role": "user", "content": question})
 
-        # === 第一轮：带工具的请求 ===
-        response = client.chat.completions.create(
-            model=DEEPSEEK_MODEL,
-            messages=messages,
-            tools=TOOL_DEFINITIONS,
-            tool_choice="auto",
-            temperature=0.7,
-            max_tokens=2000,
-        )
+        # === 循环处理（每轮都传 tools，让模型始终能用 JSON function calling）===
+        max_rounds = 5
+        for _round in range(max_rounds):
+            kwargs = {"model": DEEPSEEK_MODEL, "messages": messages, "temperature": 0.7, "max_tokens": 2000, "tools": TOOL_DEFINITIONS, "tool_choice": "auto"}
 
-        msg = response.choices[0].message
+            response = client.chat.completions.create(**kwargs)
+            msg = response.choices[0].message
 
-        # === 如果有工具调用，执行并回传结果 ===
-        if msg.tool_calls:
-            messages.append(msg)
+            has_json_calls = msg.tool_calls and len(msg.tool_calls) > 0
+            text_calls = _parse_text_tool_calls(msg.content or "")
 
-            for tc in msg.tool_calls:
-                func_name = tc.function.name
-                try:
-                    func_args = json.loads(tc.function.arguments)
-                except json.JSONDecodeError:
-                    func_args = {}
-
-                handler = TOOL_DISPATCH.get(func_name)
-                if handler:
+            if has_json_calls:
+                messages.append(msg)
+                for tc in msg.tool_calls:
+                    func_name = tc.function.name
                     try:
-                        result = handler(func_args)
-                    except Exception as e:
-                        result = {"error": str(e)}
-                else:
-                    result = {"error": f"未知工具: {func_name}"}
+                        func_args = json.loads(tc.function.arguments)
+                    except json.JSONDecodeError:
+                        func_args = {}
+                    handler = TOOL_DISPATCH.get(func_name)
+                    if handler:
+                        try:
+                            result = handler(func_args)
+                        except Exception as e:
+                            result = {"error": str(e)}
+                    else:
+                        result = {"error": f"未知工具: {func_name}"}
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": json.dumps(result, ensure_ascii=False),
+                    })
+            elif text_calls:
+                text_msg = {"role": "assistant", "content": msg.content}
+                messages.append(text_msg)
+                for func_name, func_args in text_calls:
+                    handler = TOOL_DISPATCH.get(func_name)
+                    if handler:
+                        try:
+                            result = handler(func_args)
+                        except Exception as e:
+                            result = {"error": str(e)}
+                    else:
+                        result = {"error": f"未知工具: {func_name}"}
+                    messages.append({
+                        "role": "user",
+                        "content": f"工具 {func_name} 返回结果：{json.dumps(result, ensure_ascii=False)}",
+                    })
+            else:
+                clean = _strip_xml_tool_tags(msg.content or "")
+                return {"success": True, "answer": clean}
 
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc.id,
-                    "content": json.dumps(result, ensure_ascii=False),
-                })
-
-            # 第二轮：带着工具结果生成回答
-            response = client.chat.completions.create(
-                model=DEEPSEEK_MODEL,
-                messages=messages,
-                temperature=0.7,
-                max_tokens=2000,
-            )
-            answer = response.choices[0].message.content
-        else:
-            answer = msg.content
-
-        return {"success": True, "answer": answer}
+        answer = msg.content or "（处理超时，请重试）"
+        return {"success": True, "answer": _strip_xml_tool_tags(answer)}
 
     except Exception as e:
         return {"success": False, "message": f"AI 请求失败: {str(e)}"}
+
+
+def _parse_text_tool_calls(content: str) -> list:
+    """解析 DeepSeek 文本格式的工具调用（XML / DSML 格式）"""
+    import re
+    # 先尝试提取 <invoke>...</invoke> 块（兼容 DSML 包装）
+    calls = []
+    # DeepSeek 可能用 DSML 标签包裹，提取里面内容
+    text = content
+    # 尝试多种模式
+    patterns = [
+        r'<invoke\s+name="([^"]+)"[^>]*>(.*?)</invoke>',
+        r'<invoke\s+name=\'([^\']+)\'[^>]*>(.*?)</invoke>',
+    ]
+    for pattern in patterns:
+        for m in re.finditer(pattern, text, re.DOTALL):
+            func_name = m.group(1)
+            params = {}
+            param_pattern = r'<parameter\s+name="([^"]+)"[^>]*>(.*?)</parameter>'
+            for pm in re.finditer(param_pattern, m.group(2), re.DOTALL):
+                pname = pm.group(1)
+                pval = pm.group(2).strip()
+                if pval in ("true", "True"):
+                    pval = True
+                elif pval in ("false", "False"):
+                    pval = False
+                params[pname] = pval
+            calls.append((func_name, params))
+        if calls:
+            break
+    return calls
+
+
+def _strip_xml_tool_tags(text: str) -> str:
+    """清理回答中残留的 XML/DSML 工具调用标签，防止泄漏到前端"""
+    import re
+    # 移除 <tool_calls>...</tool_calls> 块（含 DSML 前缀）
+    text = re.sub(r'(?:<DSML>)?\s*<tool_calls>\s*(?:</DSML>)?.*?(?:<DSML>)?\s*</tool_calls>\s*(?:</DSML>)?', '', text, flags=re.DOTALL)
+    # 移除单独的 <invoke>...</invoke> 块
+    text = re.sub(r'<invoke\s+name="[^"]*"[^>]*>.*?</invoke>', '', text, flags=re.DOTALL)
+    # 移除结尾可能有的 `</invoke></tool_calls>` 残留
+    text = re.sub(r'\s*</?(?:invoke|tool_calls|parameter)>(\s*</?(?:invoke|tool_calls|parameter)>)*', '', text)
+    # 移除 <DSML> 标签
+    text = re.sub(r'</?DSML>', '', text)
+    return text.strip()
