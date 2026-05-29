@@ -84,7 +84,6 @@ def get_market_indices():
             JOIN stock_info s ON d.ts_code = s.ts_code
             WHERE d.trade_date = :date AND d.pct_chg > 0
             ORDER BY d.pct_chg DESC
-            LIMIT 10
         """), {"date": latest_date}).fetchall()
 
         down_stocks = db.execute(text("""
@@ -93,7 +92,6 @@ def get_market_indices():
             JOIN stock_info s ON d.ts_code = s.ts_code
             WHERE d.trade_date = :date AND d.pct_chg < 0
             ORDER BY d.pct_chg ASC
-            LIMIT 10
         """), {"date": latest_date}).fetchall()
 
         return {
