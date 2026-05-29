@@ -118,7 +118,7 @@
               </div>
             </div>
 
-            <div v-if="loading" class="message-row assistant-row">
+            <div v-if="loading && !streaming" class="message-row assistant-row">
               <div class="msg-avatar">
                 <span>🦊</span>
               </div>
@@ -149,8 +149,8 @@
                 class="send-btn"
                 type="primary"
                 @click="handleSend"
-                :loading="loading"
-                :disabled="!question.trim()"
+                :loading="loading && !streaming"
+                :disabled="!question.trim() || streaming"
               >
                 <span v-if="!loading">发送</span>
               </el-button>
@@ -173,6 +173,7 @@ const stockList = ref([])
 const messages = ref([])
 const question = ref('')
 const loading = ref(false)
+const streaming = ref(false)
 const refreshing = ref(false)
 const sentimentSummary = ref(null)
 const messageContainer = ref(null)
@@ -293,35 +294,78 @@ const handleSend = async () => {
   const text = question.value.trim()
   if (!text) return
 
-  // 如果没有选股票，但用户问题中可能提到了某只股票，让AI自己去搜索
-
   messages.value.push({ role: 'user', content: text })
   question.value = ''
   loading.value = true
+  streaming.value = true
+
+  // 添加空的 assistant 消息，用于流式填充
+  const msgIdx = messages.value.length
+  messages.value.push({ role: 'assistant', content: '' })
   scrollToBottom()
 
-  let history = messages.value.slice(-10, -1).map(m => ({
+  let history = messages.value.slice(-11, -2).map(m => ({
     role: m.role,
     content: m.content,
   }))
 
   try {
-    const res = await chatAsk(text, stockCode.value || undefined, history)
-    if (res.data.success) {
-      messages.value.push({ role: 'assistant', content: res.data.answer })
-    } else {
-      messages.value.push({
-        role: 'assistant',
-        content: `抱歉，${res.data.message} 😅`,
-      })
+    const resp = await fetch('/api/chat/ask-stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        question: text,
+        ts_code: stockCode.value || undefined,
+        history,
+      }),
+    })
+
+    if (!resp.ok) {
+      throw new Error(`HTTP ${resp.status}`)
+    }
+
+    const reader = resp.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    let fullContent = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      buffer += decoder.decode(value, { stream: true })
+
+      // 解析 SSE 事件（data: ...\n\n）
+      const parts = buffer.split('\n')
+      buffer = parts.pop() || '' // 保留不完整的行
+
+      for (const line of parts) {
+        const trimmed = line.trim()
+        if (!trimmed.startsWith('data: ')) continue
+
+        try {
+          const data = JSON.parse(trimmed.slice(6))
+          if (data.content) {
+            fullContent += data.content
+            messages.value[msgIdx].content = fullContent
+            scrollToBottom()
+          } else if (data.done) {
+            break
+          } else if (data.error) {
+            throw new Error(data.error)
+          }
+        } catch (e) {
+          if (e.message !== 'Unexpected end of JSON input') {
+            console.error('SSE parse error:', e)
+          }
+        }
+      }
     }
   } catch (e) {
-    messages.value.push({
-      role: 'assistant',
-      content: `抱歉，连接失败: ${e.message} 😅 请检查后端是否正常运行~`,
-    })
+    messages.value[msgIdx].content = `抱歉，连接失败: ${e.message} 😅 请检查后端是否正常运行~`
   } finally {
     loading.value = false
+    streaming.value = false
     scrollToBottom()
   }
 }

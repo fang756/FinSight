@@ -134,8 +134,51 @@ def get_anomaly_alerts(ts_code: str) -> dict:
 
 
 def get_news_sentiment(ts_code: str, days: int = 7) -> dict:
-    """获取新闻情感数据"""
-    from news_fetcher import get_recent_news, get_sentiment_summary
+    """获取新闻情感数据（自动从 AKShare 实时拉取最新新闻）"""
+    from news_fetcher import get_recent_news, get_sentiment_summary, fetch_news, analyze_sentiment
+    from database import SessionLocal, NewsSentiment
+
+    # 1. 先实时拉取最新新闻并入库
+    try:
+        df = fetch_news(ts_code)
+        if not df.empty:
+            session = SessionLocal()
+            try:
+                col_title = "新闻标题" if "新闻标题" in df.columns else (df.columns[1] if len(df.columns) > 1 else None)
+                col_content = "新闻内容" if "新闻内容" in df.columns else (df.columns[2] if len(df.columns) > 2 else None)
+                col_date = "发布时间" if "发布时间" in df.columns else (df.columns[3] if len(df.columns) > 3 else None)
+                col_source = "文章来源" if "文章来源" in df.columns else (df.columns[4] if len(df.columns) > 4 else None)
+                new_count = 0
+                for _, row in df.iterrows():
+                    title = row.get(col_title) if col_title else ""
+                    if not title:
+                        continue
+                    existing = session.query(NewsSentiment).filter(
+                        NewsSentiment.ts_code == ts_code,
+                        NewsSentiment.title == title
+                    ).first()
+                    if existing:
+                        continue
+                    content = row.get(col_content) or title
+                    pub_date = row.get(col_date, datetime.now())
+                    source = row.get(col_source, "")
+                    score, label = analyze_sentiment(title)
+                    session.add(NewsSentiment(
+                        ts_code=ts_code, pub_date=pub_date, title=title,
+                        content=str(content)[:5000], sentiment_score=score,
+                        sentiment_label=label, source=str(source)[:100],
+                    ))
+                    new_count += 1
+                if new_count > 0:
+                    session.commit()
+            except Exception:
+                session.rollback()
+            finally:
+                session.close()
+    except Exception:
+        pass
+
+    # 2. 从 DB 查询（包含刚入库的新闻）
     summary = get_sentiment_summary(ts_code, days=days)
     news = get_recent_news(ts_code, days=days, limit=10)
     return {"summary": summary, "news": news}

@@ -149,12 +149,18 @@ SYSTEM_PROMPT = """你是股小查🦊，一个热情活泼的A股智能投资�
 7. 🚀 **fetch_and_analyze_stock** — 【全能分析】采集数据→算因子→预测，一步到位
 
 ## 关于系统外股票
-系统里只有50只自选股的完整数据。当用户想分析**不在系统中的股票**时：
+系统里只有50只自选股的**因子评分、LSTM预测、异常检测**数据。
+但以下工具**所有A股都支持**（会自动从网络实时拉取）：
+
+- ✅ **search_stock** — 搜索任何A股
+- ✅ **get_stock_kline_data** — 查任何股票的K线行情（实时）
+- ✅ **get_news_sentiment** — 查任何股票的新闻舆情（**实时拉取**）
+
+所以当用户提到一只不在系统里的股票时：
 1. 先用 `search_stock` 查股票代码
-2. 然后问用户：「要不要我帮这只股票做一次完整分析？我会自动采集数据、算因子评分和走势预测~」
-3. 用户同意后，直接调用 `fetch_and_analyze_stock` 一次性搞定
-4. **不要**对系统外股票单独调用 `get_factor_ranking`、`get_prediction` 等工具——它们只对系统内50只股票有效
-5. 系统内的股票用对应工具直接查就行
+2. 直接用 `get_stock_kline_data` 和 `get_news_sentiment` 查行情和新闻（**不用问用户**）
+3. 如果想看因子评分、趋势预测、异常检测 → 问用户是否要做**完整分析**
+4. 用户同意后，调用 `fetch_and_analyze_stock` 一次性搞定
 
 ## 使用工具的规则
 - 如果需要的信息可以直接用工具获取，**不要问用户**，直接调用工具
@@ -162,6 +168,7 @@ SYSTEM_PROMPT = """你是股小查🦊，一个热情活泼的A股智能投资�
 - 工具调用后，把结果整理成容易理解的回答
 
 ## 回答规则
+- **只回答与A股、股票投资、金融相关的问题**，对于非股票相关问题（如天气、科技、生活等），礼貌拒绝：「不好意思，我是专注于A股投资的智能助手，这方面的问题我没法帮你回答哦😊 你可以问我关于股票行情、新闻、分析方面的问题~」
 - 不提供具体的买卖建议，只做分析参考
 - 如果数据不足，如实告知并给出建议
 - 用中文回答
@@ -177,14 +184,20 @@ def ask_ai(question: str, ts_code: str = None, history: list = None) -> dict:
         client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_BASE_URL)
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 
-        # 如果选定了股票且有舆情数据，作为上下文注入
+        # 如果选定了股票，自动拉取最新新闻并注入上下文
         if ts_code:
+            try:
+                from news_fetcher import fetch_news, save_news_to_db
+                df = fetch_news(ts_code)
+                if not df.empty:
+                    save_news_to_db(ts_code)
+            except Exception:
+                pass
             summary = get_sentiment_summary(ts_code, days=7)
             news = get_recent_news(ts_code, days=7, limit=5)
-            if summary["total"] > 0:
-                ctx = json.dumps({"selected_stock_ts_code": ts_code, "sentiment_summary": summary, "recent_news": news}, ensure_ascii=False)
-                messages.append({"role": "user", "content": f"当前选中的股票数据：\n{ctx}"})
-                messages.append({"role": "assistant", "content": "好嘞！我记住了，随时可以帮你分析这只股票~ 😊"})
+            ctx = json.dumps({"selected_stock_ts_code": ts_code, "sentiment_summary": summary, "recent_news": news}, ensure_ascii=False)
+            messages.append({"role": "user", "content": f"当前选中的股票数据：\n{ctx}"})
+            messages.append({"role": "assistant", "content": "好嘞！我记住了，随时可以帮你分析这只股票~ 😊"})
 
         # 对话历史
         if history:
@@ -250,6 +263,117 @@ def ask_ai(question: str, ts_code: str = None, history: list = None) -> dict:
 
     except Exception as e:
         return {"success": False, "message": f"AI 请求失败: {str(e)}"}
+
+
+def ask_ai_stream(question: str, ts_code: str = None, history: list = None):
+    """流式版：先静默完成工具调用，最终回答流式输出（SSE）"""
+    if not DEEPSEEK_API_KEY or DEEPSEEK_API_KEY == "your-api-key-here":
+        yield f"data: {json.dumps({'error': '请先配置 DeepSeek API Key'}, ensure_ascii=False)}\n\n"
+        return
+
+    try:
+        client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_BASE_URL)
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+
+        if ts_code:
+            try:
+                from news_fetcher import fetch_news, save_news_to_db
+                df = fetch_news(ts_code)
+                if not df.empty:
+                    save_news_to_db(ts_code)
+            except Exception:
+                pass
+            summary = get_sentiment_summary(ts_code, days=7)
+            news = get_recent_news(ts_code, days=7, limit=5)
+            ctx = json.dumps({"selected_stock_ts_code": ts_code, "sentiment_summary": summary, "recent_news": news}, ensure_ascii=False)
+            messages.append({"role": "user", "content": f"当前选中的股票数据：\n{ctx}"})
+            messages.append({"role": "assistant", "content": "好嘞！我记住了，随时可以帮你分析这只股票~ 😊"})
+
+        if history:
+            for h in history[-6:]:
+                messages.append({"role": h["role"], "content": h["content"]})
+
+        messages.append({"role": "user", "content": question})
+
+        # === Phase 1: 工具调用轮次（非流式，静默处理） ===
+        max_rounds = 5
+        for _round in range(max_rounds):
+            kwargs = {"model": DEEPSEEK_MODEL, "messages": messages, "temperature": 0.7, "max_tokens": 2000, "tools": TOOL_DEFINITIONS, "tool_choice": "auto"}
+            response = client.chat.completions.create(**kwargs)
+            msg = response.choices[0].message
+
+            has_json_calls = msg.tool_calls and len(msg.tool_calls) > 0
+            text_calls = _parse_text_tool_calls(msg.content or "")
+
+            if has_json_calls:
+                messages.append(msg)
+                for tc in msg.tool_calls:
+                    func_name = tc.function.name
+                    try:
+                        func_args = json.loads(tc.function.arguments)
+                    except json.JSONDecodeError:
+                        func_args = {}
+                    handler = TOOL_DISPATCH.get(func_name)
+                    if handler:
+                        try:
+                            result = handler(func_args)
+                        except Exception as e:
+                            result = {"error": str(e)}
+                    else:
+                        result = {"error": f"未知工具: {func_name}"}
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": json.dumps(result, ensure_ascii=False),
+                    })
+            elif text_calls:
+                messages.append({"role": "assistant", "content": msg.content})
+                for func_name, func_args in text_calls:
+                    handler = TOOL_DISPATCH.get(func_name)
+                    if handler:
+                        try:
+                            result = handler(func_args)
+                        except Exception as e:
+                            result = {"error": str(e)}
+                    else:
+                        result = {"error": f"未知工具: {func_name}"}
+                    messages.append({
+                        "role": "user",
+                        "content": f"工具 {func_name} 返回结果：{json.dumps(result, ensure_ascii=False)}",
+                    })
+            else:
+                # 无工具调用 → 开始流式输出最终回答
+                break
+        else:
+            _round = max_rounds  # 超出最大轮次
+
+        # === Phase 2: 流式输出最终回答 ===
+        if _round >= max_rounds:
+            # 超时，回退到非流式
+            final_text = msg.content or "（处理超时，请重试）"
+            for chunk_start in range(0, len(final_text), 3):
+                yield f"data: {json.dumps({'content': final_text[chunk_start:chunk_start+3]}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'done': True})}\n\n"
+            return
+
+        # 重新发起流式请求生成最终回答
+        stream_kwargs = {"model": DEEPSEEK_MODEL, "messages": messages, "temperature": 0.7, "max_tokens": 2000, "stream": True}
+        # 传 tools 让模型有机会再次调用（但已经没工具要调了）
+        stream_kwargs["tools"] = TOOL_DEFINITIONS
+        stream_kwargs["tool_choice"] = "auto"
+
+        stream = client.chat.completions.create(**stream_kwargs)
+        for chunk in stream:
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
+            if delta.content:
+                yield f"data: {json.dumps({'content': delta.content}, ensure_ascii=False)}\n\n"
+            # 如果流式过程中又出现了工具调用（极端情况），忽略并让下一轮处理
+        yield f"data: {json.dumps({'done': True})}\n\n"
+
+    except Exception as e:
+        yield f"data: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
 
 
 def _parse_text_tool_calls(content: str) -> list:

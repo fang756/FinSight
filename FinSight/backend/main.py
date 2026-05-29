@@ -12,7 +12,7 @@ from factor_engine import calculate_factors, get_factor_ranking, get_factor_rada
 from lstm_model import train_model, predict_next, get_trained_models
 from anomaly_detector import detect_anomalies, get_anomaly_alerts, get_anomaly_kline
 from news_fetcher import save_news_to_db, get_recent_news, get_sentiment_summary
-from sentiment_agent import ask_ai
+from sentiment_agent import ask_ai, ask_ai_stream
 
 app = FastAPI(
     title="FinSight API",
@@ -319,6 +319,21 @@ def api_chat_ask(req: ChatRequest):
     """AI 问答"""
     result = ask_ai(req.question, ts_code=req.ts_code, history=req.history)
     return result
+
+
+@app.post("/api/chat/ask-stream", tags=["AI 助手"])
+async def api_chat_ask_stream(req: ChatRequest):
+    """AI 问答（流式 SSE）"""
+    from fastapi.responses import StreamingResponse
+    return StreamingResponse(
+        ask_ai_stream(req.question, ts_code=req.ts_code, history=req.history),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 # ============ 启动入口 ============
