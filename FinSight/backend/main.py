@@ -274,14 +274,50 @@ def api_anomaly_kline(ts_code: str):
 
 # ============ 数据管理接口 ============
 
+# 初始化进度状态
+_init_status = {"running": False, "progress": "", "done": False, "error": None}
+
+
+def _run_init_background():
+    """后台执行数据初始化"""
+    global _init_status
+    try:
+        _init_status = {"running": True, "progress": "开始采集...", "done": False, "error": None}
+        # 重定向 print 到日志
+        import sys, io
+        old_stdout = sys.stdout
+        sys.stdout = io.StringIO()
+        try:
+            init_data()
+            output = sys.stdout.getvalue()
+        finally:
+            sys.stdout = old_stdout
+        print(output, end="")
+        _init_status["running"] = False
+        _init_status["done"] = True
+        _init_status["progress"] = "初始化完成"
+    except Exception as e:
+        _init_status["running"] = False
+        _init_status["done"] = True
+        _init_status["error"] = str(e)
+
+
 @app.post("/api/data/init", tags=["数据管理"])
 def api_data_init():
-    """初始化数据（首次运行时采集）"""
-    try:
-        init_data()
-        return {"success": True, "message": "数据初始化完成"}
-    except Exception as e:
-        return {"success": False, "message": f"初始化失败: {str(e)}"}
+    """初始化数据（后台执行，立即返回）"""
+    global _init_status
+    if _init_status["running"]:
+        return {"success": True, "message": "正在采集中，请勿重复点击"}
+    import threading
+    t = threading.Thread(target=_run_init_background, daemon=True)
+    t.start()
+    return {"success": True, "message": "数据采集已启动，请查看状态"}
+
+
+@app.get("/api/data/init-status", tags=["数据管理"])
+def api_init_status():
+    """获取初始化进度"""
+    return _init_status
 
 
 @app.get("/api/data/status", tags=["数据管理"])

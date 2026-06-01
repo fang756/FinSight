@@ -1,25 +1,60 @@
 """
 FinSight 股小查工具集
-搜索股票 + 调用项目各功能模块
+使用 BaoStock 搜索股票 + 获取行情（更稳定）
 """
 import time
-import akshare as ak
+import baostock as bs
+import pandas as pd
 from datetime import datetime, timedelta
 from sqlalchemy import text
 from database import SessionLocal
 from config import STOCK_INDUSTRY_MAP
 
 
+def _to_bs_code(ts_code: str) -> str:
+    code = ts_code.split(".")[0]
+    market = ts_code.split(".")[1].lower()
+    return f"{market}.{code}"
+
+
+def _from_bs_code(bs_code: str) -> str:
+    parts = bs_code.split(".")
+    market = parts[0].upper()
+    code = parts[1]
+    return f"{code}.{market}"
+
+
+def _bs_login():
+    lg = bs.login()
+    if lg.error_code != "0":
+        raise Exception(f"BaoStock login failed: {lg.error_msg}")
+
+
 def search_stock(keyword: str) -> dict:
-    """搜索A股股票代码和名称"""
+    """搜索A股股票代码和名称（使用 BaoStock）"""
     try:
-        df = _akshare_retry(ak.stock_info_a_code_name)
+        _bs_login()
+        # query_all_stock 需要交易日，尝试今天→昨天→最近可用日期
+        today = datetime.now()
+        for delta in range(10):
+            day = (today - timedelta(days=delta)).strftime("%Y-%m-%d")
+            rs = bs.query_all_stock(day=day)
+            df = rs.get_data()
+            if df is not None and len(df) > 100:
+                break
+        bs.logout()
+
         if df.empty:
             return {"found": False, "message": "无法获取股票列表"}
 
+        # 过滤掉指数、退市等非交易品种（code 以 b. 开头的是指数）
+        df = df[~df["code"].str.startswith("b.")]
+        df["ts_code"] = df["code"].apply(_from_bs_code)
+        df["code_num"] = df["code"].str.split(".").str[1]
+
         result = df[
-            df["name"].str.contains(keyword, na=False) |
-            df["code"].str.contains(keyword, na=False)
+            df["code_name"].str.contains(keyword, na=False) |
+            df["code_num"].str.contains(keyword, na=False)
         ]
 
         if result.empty:
@@ -27,9 +62,7 @@ def search_stock(keyword: str) -> dict:
 
         stocks = []
         for _, row in result.head(5).iterrows():
-            code = row["code"]
-            ts_code = f"{code}.SH" if code.startswith("6") else f"{code}.SZ"
-            stocks.append({"ts_code": ts_code, "name": row["name"], "code": code})
+            stocks.append({"ts_code": row["ts_code"], "name": row["code_name"], "code": row["code_num"]})
 
         return {"found": True, "stocks": stocks}
     except Exception as e:
@@ -37,8 +70,9 @@ def search_stock(keyword: str) -> dict:
 
 
 def get_stock_kline_data(ts_code: str, limit: int = 30) -> dict:
-    """获取K线行情（优先查DB，查不到从AKShare实时拉）"""
+    """获取K线行情（优先查DB，查不到从 BaoStock 实时拉）"""
     try:
+        # 1. 查数据库
         db = SessionLocal()
         rows = db.execute(text("""
             SELECT trade_date, close, pct_chg
@@ -53,30 +87,41 @@ def get_stock_kline_data(ts_code: str, limit: int = 30) -> dict:
             kline = [{"date": str(r[0]), "close": float(r[1]), "pct_change": float(r[2])} for r in reversed(rows)]
             return {"has_data": True, "source": "database", "kline": kline}
 
-        pure_code = ts_code.split(".")[0]
-        df = _akshare_retry(
-            ak.stock_zh_a_hist,
-            symbol=pure_code, period="daily",
-            start_date=(datetime.now() - timedelta(days=60)).strftime("%Y%m%d"),
-            end_date=datetime.now().strftime("%Y%m%d"), adjust="qfq"
+        # 2. 从 BaoStock 实时拉取
+        bs_code = _to_bs_code(ts_code)
+        _bs_login()
+        end = datetime.now().strftime("%Y-%m-%d")
+        start = (datetime.now() - timedelta(days=60)).strftime("%Y-%m-%d")
+        rs = bs.query_history_k_data_plus(
+            bs_code, "date,close,pctChg",
+            start_date=start, end_date=end,
+            frequency="d", adjustflag="3",
         )
+        df = rs.get_data()
+        bs.logout()
+
         if df is not None and not df.empty:
+            df = df[df["pctChg"] != ""].copy()
             kline = []
             for _, r in df.iterrows():
                 kline.append({
-                    "date": str(r["日期"]),
-                    "close": float(r["收盘"]),
-                    "pct_change": float(r["涨跌幅"]) if "涨跌幅" in r else 0,
+                    "date": str(r["date"]),
+                    "close": float(r["close"]) if r["close"] else 0,
+                    "pct_change": float(r["pctChg"]) if r["pctChg"] else 0,
                 })
-            return {"has_data": True, "source": "akshare", "kline": kline[-limit:]}
+            return {"has_data": True, "source": "baostock", "kline": kline[-limit:]}
 
         return {"has_data": False, "message": f"未找到 {ts_code} 的行情数据"}
     except Exception as e:
+        try:
+            bs.logout()
+        except Exception:
+            pass
         return {"has_data": False, "message": f"获取行情失败: {str(e)}"}
 
 
 def get_factor_ranking(ts_code: str) -> dict:
-    """获取因子评分（PE/PB/ROE/动量/波动 + 综合）"""
+    """获取因子评分"""
     try:
         db = SessionLocal()
         row = db.execute(text("""
@@ -92,7 +137,7 @@ def get_factor_ranking(ts_code: str) -> dict:
         db.close()
 
         if not row:
-            return {"available": False, "message": "该股票暂无因子评分数据，请先在「因子选股」页面刷新计算"}
+            return {"available": False, "message": "暂无因子评分数据，请先在「因子选股」页面刷新计算"}
 
         return {
             "available": True,
@@ -134,11 +179,10 @@ def get_anomaly_alerts(ts_code: str) -> dict:
 
 
 def get_news_sentiment(ts_code: str, days: int = 7) -> dict:
-    """获取新闻情感数据（自动从 AKShare 实时拉取最新新闻）"""
+    """获取新闻情感数据（AKShare 实时拉取）"""
     from news_fetcher import get_recent_news, get_sentiment_summary, fetch_news, analyze_sentiment
     from database import SessionLocal, NewsSentiment
 
-    # 1. 先实时拉取最新新闻并入库
     try:
         df = fetch_news(ts_code)
         if not df.empty:
@@ -178,50 +222,46 @@ def get_news_sentiment(ts_code: str, days: int = 7) -> dict:
     except Exception:
         pass
 
-    # 2. 从 DB 查询（包含刚入库的新闻）
     summary = get_sentiment_summary(ts_code, days=days)
     news = get_recent_news(ts_code, days=days, limit=10)
     return {"summary": summary, "news": news}
 
 
-def _akshare_retry(func, *args, **kwargs):
-    """AKShare 请求重试（最多5次，间隔递增）"""
-    for attempt in range(5):
-        try:
-            return func(*args, **kwargs)
-        except Exception as e:
-            if attempt < 4:
-                time.sleep(2 + attempt * 2)
-            else:
-                raise e
-
-
 def fetch_and_analyze_stock(ts_code: str) -> dict:
-    """采集数据 → 计算因子 → 训练预测 一站式分析"""
-    pure_code = ts_code.split(".")[0]
+    """采集数据 → 计算因子 → 训练预测 一站式分析（使用 BaoStock）"""
     result = {"ts_code": ts_code, "name": ts_code, "data_fetched": False, "factor": None, "prediction": None}
+    pure_code = ts_code.split(".")[0]
 
     # 1. 获取股票名称
     try:
-        name_df = _akshare_retry(ak.stock_info_a_code_name)
-        if name_df is not None and not name_df.empty:
-            match = name_df[name_df["code"] == pure_code]
-            if not match.empty:
-                result["name"] = match.iloc[0]["name"]
+        _bs_login()
+        rs = bs.query_stock_basic(_to_bs_code(ts_code))
+        if rs and rs.error_code == "0":
+            info = rs.get_data()
+            if not info.empty:
+                result["name"] = info.iloc[0]["code_name"]
+        bs.logout()
     except Exception:
-        pass
+        try:
+            bs.logout()
+        except Exception:
+            pass
 
-    # 2. 尝试采集日线数据并存入DB
+    # 2. 采集日线数据并存入DB
     try:
-        df = _akshare_retry(
-            ak.stock_zh_a_hist,
-            symbol=pure_code, period="daily",
-            start_date="20230101",
-            end_date=datetime.now().strftime("%Y%m%d"), adjust="qfq"
+        _bs_login()
+        end = datetime.now().strftime("%Y-%m-%d")
+        rs = bs.query_history_k_data_plus(
+            _to_bs_code(ts_code),
+            "date,open,high,low,close,volume,amount,turn,pctChg",
+            start_date="2023-01-01", end_date=end,
+            frequency="d", adjustflag="3",
         )
+        df = rs.get_data()
+        bs.logout()
+
         if df is not None and not df.empty:
-            from database import SessionLocal
-            from sqlalchemy import text
+            df = df[df["pctChg"] != ""].copy()
             db = SessionLocal()
             try:
                 exists = db.execute(text("SELECT ts_code FROM stock_info WHERE ts_code=:c"), {"c": ts_code}).fetchone()
@@ -229,33 +269,28 @@ def fetch_and_analyze_stock(ts_code: str) -> dict:
                     industry = STOCK_INDUSTRY_MAP.get(ts_code)
                     db.execute(text("INSERT INTO stock_info (ts_code, name, industry) VALUES (:c, :n, :i)"),
                                {"c": ts_code, "n": result["name"], "i": industry})
-                else:
-                    industry = STOCK_INDUSTRY_MAP.get(ts_code)
-                    if industry:
-                        db.execute(text("UPDATE stock_info SET industry = :i WHERE ts_code = :c AND industry IS NULL"),
-                                   {"i": industry, "c": ts_code})
+
                 saved = 0
                 for _, r in df.iterrows():
-                    turnover_val = float(r["换手率"]) if "换手率" in r else 0
-                    exists = db.execute(text("SELECT id, turnover FROM stock_daily WHERE ts_code=:c AND trade_date=:d"),
-                                        {"c": ts_code, "d": str(r["日期"])}).fetchone()
+                    trade_date = str(r["date"]).replace("-", "")
+                    exists = db.execute(text("SELECT id FROM stock_daily WHERE ts_code=:c AND trade_date=:d"),
+                                        {"c": ts_code, "d": trade_date}).fetchone()
                     if not exists:
                         db.execute(text("""
                             INSERT INTO stock_daily (ts_code, trade_date, open, high, low, close, vol, amount, turnover, pct_chg)
                             VALUES (:c,:d,:o,:h,:l,:cl,:v,:a,:t,:p)
                         """), {
-                            "c": ts_code, "d": str(r["日期"]),
-                            "o": float(r["开盘"]), "h": float(r["最高"]),
-                            "l": float(r["最低"]), "cl": float(r["收盘"]),
-                            "v": float(r["成交量"]) if "成交量" in r else 0,
-                            "a": float(r["成交额"]) if "成交额" in r else 0,
-                            "t": turnover_val,
-                            "p": float(r["涨跌幅"]) if "涨跌幅" in r else 0,
+                            "c": ts_code, "d": trade_date,
+                            "o": float(r["open"]) if r["open"] else 0,
+                            "h": float(r["high"]) if r["high"] else 0,
+                            "l": float(r["low"]) if r["low"] else 0,
+                            "cl": float(r["close"]) if r["close"] else 0,
+                            "v": float(r["volume"]) if r["volume"] else 0,
+                            "a": float(r["amount"]) if r["amount"] else 0,
+                            "t": float(r["turn"]) if r["turn"] else 0,
+                            "p": float(r["pctChg"]) if r["pctChg"] else 0,
                         })
                         saved += 1
-                    elif exists.turnover is None or exists.turnover == 0:
-                        db.execute(text("UPDATE stock_daily SET turnover = :t WHERE id = :id"),
-                                   {"t": turnover_val, "id": exists.id})
                 db.commit()
                 result["data_fetched"] = True
                 result["records_saved"] = saved
@@ -264,9 +299,12 @@ def fetch_and_analyze_stock(ts_code: str) -> dict:
             finally:
                 db.close()
     except Exception:
-        pass
+        try:
+            bs.logout()
+        except Exception:
+            pass
 
-    # 3. 计算因子（如果数据采集成功）
+    # 3. 计算因子 + 4. 训练预测
     if result["data_fetched"]:
         try:
             from factor_engine import calculate_factors, save_factor_scores
@@ -279,7 +317,7 @@ def fetch_and_analyze_stock(ts_code: str) -> dict:
                     def _safe(v, default=0):
                         try:
                             val = float(v)
-                            return round(val, 4) if not (val != val) else default  # NaN check
+                            return round(val, 4) if not (val != val) else default
                         except:
                             return default
                     result["factor"] = {
@@ -293,20 +331,17 @@ def fetch_and_analyze_stock(ts_code: str) -> dict:
         except Exception:
             pass
 
-        # 4. 训练 LSTM 并预测
         try:
             from lstm_model import train_model, predict_next
             train_model(ts_code, epochs=50)
             pred = predict_next(ts_code, days=5)
             if pred.get("success") and pred.get("predictions"):
-                pred_list = []
-                for p in pred["predictions"]:
-                    pred_list.append({"day": p.get("day", 0), "price": round(float(p.get("predicted_price", 0)), 2)})
-                result["prediction"] = {"predictions": pred_list}
+                result["prediction"] = {
+                    "predictions": [{"day": p.get("day", 0), "price": round(float(p.get("predicted_price", 0)), 2)} for p in pred["predictions"]]
+                }
         except Exception:
             pass
 
-    # 5. 尝试获取行情概览（即使没有存入DB，也尝试获取最近行情）
     if not result["data_fetched"]:
         try:
             kline = get_stock_kline_data(ts_code, limit=5)

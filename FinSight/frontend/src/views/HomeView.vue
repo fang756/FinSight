@@ -139,15 +139,16 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { getDataStatus, initData, getMarketIndices } from '../api'
+import { getDataStatus, getInitStatus, initData, getMarketIndices } from '../api'
 
 const router = useRouter()
 const dataStatus = ref(null)
 const marketStats = ref(null)
 const initLoading = ref(false)
+let initPollTimer = null
 
 const goToFactor = (tsCode) => {
   router.push({ path: '/factor', query: { code: tsCode } })
@@ -169,23 +170,49 @@ onMounted(async () => {
   }
 })
 
+const pollInitStatus = async () => {
+  try {
+    const res = await getInitStatus()
+    const st = res.data
+    if (st.error) {
+      ElMessage.error('采集失败: ' + st.error)
+      initLoading.value = false
+      if (initPollTimer) clearInterval(initPollTimer)
+      return
+    }
+    if (st.done) {
+      ElMessage.success('数据初始化完成')
+      initLoading.value = false
+      if (initPollTimer) clearInterval(initPollTimer)
+      const statusRes = await getDataStatus()
+      dataStatus.value = statusRes.data
+    }
+  } catch (e) {
+    // 忽略
+  }
+}
+
 const handleInitData = async () => {
   initLoading.value = true
   try {
     const res = await initData()
-    if (res.data.success) {
-      ElMessage.success('数据初始化完成')
-      const statusRes = await getDataStatus()
-      dataStatus.value = statusRes.data
-    } else {
+    if (!res.data.success) {
       ElMessage.error(res.data.message)
+      initLoading.value = false
+      return
     }
+    ElMessage.info('数据采集中，请稍候...')
+    // 轮询进度
+    initPollTimer = setInterval(pollInitStatus, 3000)
   } catch (e) {
     ElMessage.error('初始化失败: ' + e.message)
-  } finally {
     initLoading.value = false
   }
 }
+
+onUnmounted(() => {
+  if (initPollTimer) clearInterval(initPollTimer)
+})
 </script>
 
 <style scoped>

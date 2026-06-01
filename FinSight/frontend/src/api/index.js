@@ -28,6 +28,7 @@ export const getAnomalyKline = (code) => api.get(`/anomaly/kline/${code}`)
 
 // ============ 数据管理 ============
 export const initData = () => api.post('/data/init')
+export const getInitStatus = () => api.get('/data/init-status')
 export const getDataStatus = () => api.get('/data/status')
 
 // ============ AI 助手 ============
