@@ -197,7 +197,7 @@ def init_data():
         last_date = get_last_trade_date(code)
         if last_date:
             start_date = (pd.to_datetime(last_date) + timedelta(days=1)).strftime("%Y-%m-%d")
-            if start_date >= today:
+            if start_date > today:
                 print(f"  [{i+1}/{len(stock_list)}] {code} {name} → 已是最新（{last_date}），跳过")
                 continue
         else:
