@@ -372,6 +372,16 @@ async def api_chat_ask_stream(req: ChatRequest):
     )
 
 
+# ============ 静态文件托管（生产环境） ============
+
+import os
+_frontend_dist = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
+if os.path.isdir(_frontend_dist):
+    from fastapi.staticfiles import StaticFiles
+    app.mount("/", StaticFiles(directory=_frontend_dist, html=True), name="frontend")
+    print(f"[部署] 前端静态文件已挂载: {_frontend_dist}")
+
+
 # ============ 启动入口 ============
 
 if __name__ == "__main__":
