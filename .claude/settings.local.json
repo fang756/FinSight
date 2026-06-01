@@ -47,7 +47,22 @@
       "PowerShell(& \"D:\\\\python.exe\" -B \"C:\\\\Users\\\\fanghongjiang\\\\Desktop\\\\2026-05-28-14-49-49\\\\FinSight\\\\backend\\\\update_industry.py\" 2>&1)",
       "PowerShell(Stop-Process -Id 31164 -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 2; Set-Location \"C:\\\\Users\\\\fanghongjiang\\\\Desktop\\\\2026-05-28-14-49-49\\\\FinSight\\\\backend\"; $env:PYTHONIOENCODING='utf-8'; $env:DEEPSEEK_API_KEY='sk-17a4a616400e4a58b2caccac8d4cf027'; Start-Process -NoNewWindow -FilePath \"D:\\\\python.exe\" -ArgumentList \"-m uvicorn main:app --host 0.0.0.0 --port 8003\"; Start-Sleep -Seconds 4; curl.exe -s http://localhost:8003/api/factor/ranking?top_n=5 2>$null | ForEach-Object { $_ -replace '\"industry\":null', '\"industry\":\"NULL\"' } | ForEach-Object { $_ -replace '\"factor_pe\":null', '\"factor_pe\":\"NULL\"' })",
       "PowerShell(& \"D:\\\\python.exe\" -B \"C:\\\\Users\\\\fanghongjiang\\\\Desktop\\\\2026-05-28-14-49-49\\\\FinSight\\\\backend\\\\backfill_turnover.py\" 2>&1)",
-      "PowerShell(Stop-Process -Id 30356 -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 2; Set-Location \"C:\\\\Users\\\\fanghongjiang\\\\Desktop\\\\2026-05-28-14-49-49\\\\FinSight\\\\backend\"; $env:PYTHONIOENCODING='utf-8'; $env:DEEPSEEK_API_KEY='sk-17a4a616400e4a58b2caccac8d4cf027'; Start-Process -NoNewWindow -FilePath \"D:\\\\python.exe\" -ArgumentList \"-m uvicorn main:app --host 0.0.0.0 --port 8003\"; Start-Sleep -Seconds 4; curl.exe -s \"http://localhost:8003/api/factor/ranking?top_n=5\" 2>$null | python -c \"import sys,json; d=json.load\\(sys.stdin\\); [print\\(f'{r[\\\\\"ts_code\\\\\"]} {r[\\\\\"name\\\\\"]} 行业={r[\\\\\"industry\\\\\"]} 价值={r[\\\\\"factor_pe\\\\\"]}'\\) for r in d['ranking']]\")"
+      "PowerShell(Stop-Process -Id 30356 -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 2; Set-Location \"C:\\\\Users\\\\fanghongjiang\\\\Desktop\\\\2026-05-28-14-49-49\\\\FinSight\\\\backend\"; $env:PYTHONIOENCODING='utf-8'; $env:DEEPSEEK_API_KEY='sk-17a4a616400e4a58b2caccac8d4cf027'; Start-Process -NoNewWindow -FilePath \"D:\\\\python.exe\" -ArgumentList \"-m uvicorn main:app --host 0.0.0.0 --port 8003\"; Start-Sleep -Seconds 4; curl.exe -s \"http://localhost:8003/api/factor/ranking?top_n=5\" 2>$null | python -c \"import sys,json; d=json.load\\(sys.stdin\\); [print\\(f'{r[\\\\\"ts_code\\\\\"]} {r[\\\\\"name\\\\\"]} 行业={r[\\\\\"industry\\\\\"]} 价值={r[\\\\\"factor_pe\\\\\"]}'\\) for r in d['ranking']]\")",
+      "PowerShell(cd C:\\\\Users\\\\fanghongjiang\\\\Desktop\\\\2026-05-28-14-49-49\\\\FinSight\\\\backend; $env:PYTHONIOENCODING='utf-8'; python -m uvicorn main:app --host 0.0.0.0 --port 8003 --reload 2>&1)",
+      "PowerShell(curl.exe -s http://127.0.0.1:8003/api/health)",
+      "Read(//c/Program Files/**)",
+      "Read(//c/Users/fanghongjiang/AppData/Local/Programs/Git/bin/**)",
+      "PowerShell(cd C:\\\\Users\\\\fanghongjiang\\\\Desktop\\\\2026-05-28-14-49-49\\\\FinSight\\\\frontend; $env:Path = \"C:\\\\Users\\\\fanghongjiang\\\\.workbuddy\\\\binaries\\\\node\\\\node-v22.12.0-win-x64;$env:Path\"; npm run dev 2>&1)",
+      "PowerShell(curl.exe -s -X POST http://127.0.0.1:8003/api/chat/ask -H \"Content-Type: application/json\" -d \"{`\"question`\":`\"��һ��ę́`\"}\")",
+      "Read(//c/Users/fanghongjiang/AppData/Local/Programs/Python/**)",
+      "Read(//d/Scripts/**)",
+      "Read(//d//**)",
+      "Read(//c//**)",
+      "PowerShell(& \"C:\\\\Users\\\\fanghongjiang\\\\AppData\\\\Local\\\\Programs\\\\Python\\\\Launcher\\\\py.exe\" --list 2>&1)",
+      "PowerShell(py.exe -3.13 -c \"import sys; print\\(sys.executable\\); print\\(sys.prefix\\); print\\(sys.base_prefix\\)\" 2>$null)",
+      "PowerShell(D:\\\\Scripts\\\\uv.exe run --with uvicorn --with fastapi -- python -c \"print\\('uv works'\\)\" 2>&1)",
+      "PowerShell(python --version)",
+      "PowerShell(D:\\\\Scripts\\\\uv.exe python list 2>&1)"
     ]
   }
 }
